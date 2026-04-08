@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { Member } from '@/lib/data';
 import MemberCard from './MemberCard';
 
@@ -11,152 +11,39 @@ interface Props {
   onAddRelative: (id: number, type: 'parent' | 'child' | 'spouse') => void;
 }
 
-const W = 150;   // card width
-const H = 148;   // card height
-const SPOUSE_GAP = 32;  // gap between spouses
-const SIBLING_GAP = 20; // gap between sibling groups
-const V_GAP = 90;       // vertical gap between generations
+const CW = 150;   // card width
+const CH = 148;   // card height
+const SG = 28;    // spouse gap (between couple)
+const HG = 24;    // horizontal gap between siblings/groups
+const VG = 88;    // vertical gap between generations
 
-interface NodePos { x: number; y: number; width: number }
+// ─── helpers ────────────────────────────────────────────────────────────────
 
-// A "family unit" = one member + optional spouse, + their children below
-interface FamilyUnit {
-  primary: number;
-  spouse: number | null;
-  children: number[]; // direct children shared
+function getGen(id: number, members: Member[], cache: Map<number, number> = new Map()): number {
+  if (cache.has(id)) return cache.get(id)!;
+  const m = members.find(x => x.id === id);
+  if (!m) return 0;
+  const validParents = (m.parents || []).filter(p => members.find(x => x.id === p));
+  if (!validParents.length) { cache.set(id, 0); return 0; }
+  const g = Math.max(...validParents.map(p => getGen(p, members, cache))) + 1;
+  cache.set(id, g);
+  return g;
 }
 
-function buildFamilyUnits(members: Member[]): FamilyUnit[] {
-  const units: FamilyUnit[] = [];
-  const placed = new Set<number>();
+// ─── LAYOUT ENGINE ──────────────────────────────────────────────────────────
+//
+// Strategy: process generation by generation top-down.
+// Each "slot" is either a single card or a couple side-by-side.
+// A couple = (primary, spouse) where spouse shares ≥1 child with primary
+//   OR is listed in spouses[] of primary and same generation.
+// Children are placed below their parent couple, centered.
+// No member appears twice. No line drawn unless direct parent→child or spouse.
 
-  // Roots = members with no parents in the dataset
-  const roots = members.filter(m => !m.parents.some(p => members.find(x => x.id === p)));
+function computeLayout(members: Member[]) {
+  const genCache = new Map<number, number>();
+  const genOf = (id: number) => getGen(id, members, genCache);
 
-  // For each root, pair with spouse if any
-  roots.forEach(root => {
-    if (placed.has(root.id)) return;
-    placed.add(root.id);
-
-    const spouseId = (root.spouses || []).find(sid => {
-      const s = members.find(x => x.id === sid);
-      return s && !s.parents.some(p => members.find(x => x.id === p));
-    }) ?? null;
-
-    if (spouseId) placed.add(spouseId);
-
-    // Children = root's children that exist in dataset
-    const children = [...new Set([
-      ...(root.children || []),
-      ...(spouseId ? (members.find(x => x.id === spouseId)?.children || []) : [])
-    ])].filter(cid => members.find(x => x.id === cid));
-
-    units.push({ primary: root.id, spouse: spouseId, children });
-  });
-
-  return units;
-}
-
-// Recursively compute positions
-// Returns: map of id -> {x, y}, and total width used
-function computePositions(
-  members: Member[],
-  ids: number[],
-  startX: number,
-  startY: number,
-  placed: Set<number>
-): Record<number, NodePos> {
-  const pos: Record<number, NodePos> = {};
-
-  // Group siblings by their shared parent pair
-  // Each group = members who share the same parents
-  // Process each member; if they have a spouse, place spouse next to them
-
-  let curX = startX;
-
-  ids.forEach(id => {
-    if (placed.has(id)) return;
-    const m = members.find(x => x.id === id);
-    if (!m) return;
-    placed.add(id);
-
-    // Find spouse among same-generation members
-    const spouseId = (m.spouses || []).find(sid => {
-      const s = members.find(x => x.id === sid);
-      if (!s || placed.has(sid)) return false;
-      // Spouse is on same generation (roughly)
-      return true;
-    }) ?? null;
-
-    if (spouseId) placed.add(spouseId);
-
-    // Unit width = 1 or 2 cards
-    const unitW = spouseId ? W + SPOUSE_GAP + W : W;
-
-    // Children
-    const childIds = [...new Set([
-      ...(m.children || []),
-      ...(spouseId ? (members.find(x => x.id === spouseId)?.children || []) : [])
-    ])].filter(cid => {
-      const c = members.find(x => x.id === cid);
-      return c && !placed.has(cid);
-    });
-
-    // Recursively layout children to get their total width
-    const childPos = childIds.length > 0
-      ? computePositions(members, childIds, curX, startY + H + V_GAP, new Set(placed))
-      : {};
-
-    // Total width of children subtree
-    let childrenWidth = 0;
-    if (childIds.length > 0) {
-      const childXs = childIds.map(cid => childPos[cid]?.x ?? curX).filter(Boolean);
-      const minCX = Math.min(...childXs);
-      const maxCX = Math.max(...childXs) + W;
-      childrenWidth = maxCX - minCX;
-      // Shift children to start at curX if needed
-      const shift = curX - minCX;
-      childIds.forEach(cid => {
-        if (childPos[cid]) childPos[cid].x += shift;
-        // Also shift their descendants
-        Object.keys(childPos).forEach(k => {
-          if (childPos[Number(k)]) childPos[Number(k)].x += shift;
-        });
-      });
-    }
-
-    // The unit should be centered over its children
-    const totalW = Math.max(unitW, childrenWidth);
-    const unitStartX = curX + (totalW - unitW) / 2;
-
-    pos[id] = { x: unitStartX, y: startY, width: W };
-    if (spouseId) {
-      pos[spouseId] = { x: unitStartX + W + SPOUSE_GAP, y: startY, width: W };
-    }
-
-    // Merge child positions
-    Object.assign(pos, childPos);
-
-    curX += totalW + SIBLING_GAP;
-  });
-
-  return pos;
-}
-
-export default function FamilyTree({ members, selectedId, isAdmin, onSelect, onAddRelative }: Props) {
-  const [hovered, setHovered] = useState<number | null>(null);
-
-  // ── LAYOUT ──────────────────────────────────────────────────────────
-  // Group members by generation
-  function genOf(id: number, vis = new Set<number>()): number {
-    if (vis.has(id)) return 0; vis.add(id);
-    const m = members.find(x => x.id === id);
-    if (!m) return 0;
-    const validParents = (m.parents || []).filter(p => members.find(x => x.id === p));
-    if (!validParents.length) return 0;
-    return Math.max(...validParents.map(p => genOf(p, new Set(vis)))) + 1;
-  }
-
+  // Build genMap
   const genMap: Record<number, number[]> = {};
   members.forEach(m => {
     const g = genOf(m.id);
@@ -165,285 +52,362 @@ export default function FamilyTree({ members, selectedId, isAdmin, onSelect, onA
   });
   const genKeys = Object.keys(genMap).map(Number).sort((a, b) => a - b);
 
-  // Assign positions generation by generation
-  const pos: Record<number, { x: number; y: number }> = {};
-  const globalPlaced = new Set<number>();
-
-  genKeys.forEach((g, gi) => {
-    const row = genMap[g].filter(id => !globalPlaced.has(id));
-    let curX = 24;
-
-    row.forEach(id => {
-      if (globalPlaced.has(id)) return;
-      const m = members.find(x => x.id === id);
-      if (!m) return;
-      globalPlaced.add(id);
-
-      // Find spouse on same generation
-      const spouseId = (m.spouses || []).find(sid => {
-        if (globalPlaced.has(sid)) return false;
-        const sg = genOf(sid);
-        return sg === g;
-      }) ?? null;
-
-      if (spouseId !== null) globalPlaced.add(spouseId);
-
-      // Children of this couple
-      const childIds = [...new Set([
-        ...(m.children || []),
-        ...(spouseId !== null ? (members.find(x => x.id === spouseId)?.children || []) : [])
-      ])].filter(cid => members.find(x => x.id === cid));
-
-      // Compute how wide the children subtree is
-      // (children are placed in next generation, so we look ahead)
-      const nextGenIds = genMap[g + 1] || [];
-      const myChildrenInNextGen = childIds.filter(cid => nextGenIds.includes(cid));
-      const estimatedChildWidth = myChildrenInNextGen.length * (W + SIBLING_GAP) - SIBLING_GAP;
-
-      const coupleWidth = spouseId !== null ? W + SPOUSE_GAP + W : W;
-      const unitWidth = Math.max(coupleWidth, estimatedChildWidth > 0 ? estimatedChildWidth : coupleWidth);
-
-      const unitStart = curX + Math.max(0, (unitWidth - coupleWidth) / 2);
-
-      pos[id] = { x: unitStart, y: 24 + gi * (H + V_GAP) };
-      if (spouseId !== null) {
-        pos[spouseId] = { x: unitStart + W + SPOUSE_GAP, y: 24 + gi * (H + V_GAP) };
+  // For each member, find their "official" spouse at same generation
+  // (first spouse in spouses[] that exists in members and same gen)
+  const getSpouse = (id: number): number | null => {
+    const m = members.find(x => x.id === id);
+    if (!m) return null;
+    for (const sid of (m.spouses || [])) {
+      if (members.find(x => x.id === sid) && genOf(sid) === genOf(id)) {
+        return sid;
       }
+    }
+    return null;
+  };
 
-      curX += unitWidth + SIBLING_GAP;
+  // For a couple (primary + optional spouse), get their shared children
+  const getCoupleChildren = (primary: number, spouse: number | null): number[] => {
+    const pm = members.find(x => x.id === primary);
+    const sm = spouse !== null ? members.find(x => x.id === spouse) : null;
+    const allChildren = [...new Set([
+      ...(pm?.children || []),
+      ...(sm?.children || []),
+    ])].filter(cid => members.find(x => x.id === cid));
+    return allChildren;
+  };
+
+  // ── Assign x positions ───────────────────────────────────────────────
+  // We do a bottom-up pass: compute subtree widths, then top-down assign x.
+
+  // First, identify all "couple units" per generation (avoid double-placing spouses)
+  const units: Array<{ primary: number; spouse: number | null; gen: number }> = [];
+  const placed = new Set<number>();
+
+  genKeys.forEach(g => {
+    (genMap[g] || []).forEach(id => {
+      if (placed.has(id)) return;
+      placed.add(id);
+      const sp = getSpouse(id);
+      if (sp !== null && !placed.has(sp)) {
+        placed.add(sp);
+        units.push({ primary: id, spouse: sp, gen: g });
+      } else {
+        units.push({ primary: id, spouse: null, gen: g });
+      }
     });
   });
 
-  // Second pass: center parents over their children
-  for (let pass = 0; pass < 3; pass++) {
-    for (let gi = genKeys.length - 2; gi >= 0; gi--) {
-      const g = genKeys[gi];
-      const row = genMap[g] || [];
+  // Compute subtree width for a unit (recursive)
+  const subtreeWidthCache = new Map<string, number>();
+  function subtreeWidth(primary: number, spouse: number | null): number {
+    const key = `${primary}-${spouse}`;
+    if (subtreeWidthCache.has(key)) return subtreeWidthCache.get(key)!;
 
-      // Process couples together
-      const processed = new Set<number>();
-      row.forEach(id => {
-        if (processed.has(id) || !pos[id]) return;
-        processed.add(id);
+    const selfW = spouse !== null ? CW + SG + CW : CW;
+    const children = getCoupleChildren(primary, spouse);
 
-        const m = members.find(x => x.id === id);
-        if (!m) return;
-
-        const spouseId = (m.spouses || []).find(sid => {
-          const sg = genOf(sid);
-          return sg === g && pos[sid];
-        }) ?? null;
-        if (spouseId !== null) processed.add(spouseId);
-
-        // Get all children of this couple with positions
-        const childIds = [...new Set([
-          ...(m.children || []),
-          ...(spouseId !== null ? (members.find(x => x.id === spouseId)?.children || []) : [])
-        ])].filter(cid => pos[cid]);
-
-        if (!childIds.length) return;
-
-        const childXs = childIds.map(cid => pos[cid].x);
-        const childCenter = (Math.min(...childXs) + Math.max(...childXs) + W) / 2;
-
-        const coupleWidth = spouseId !== null ? W + SPOUSE_GAP + W : W;
-        const coupleCenter = childCenter - coupleWidth / 2;
-
-        const dx = coupleCenter - pos[id].x;
-        if (Math.abs(dx) > 1) {
-          pos[id].x += dx;
-          if (spouseId !== null && pos[spouseId]) pos[spouseId].x += dx;
-        }
-      });
+    if (!children.length) {
+      subtreeWidthCache.set(key, selfW);
+      return selfW;
     }
+
+    // Children's total width (sum of their subtrees + gaps)
+    let childTotal = 0;
+    const childPlaced = new Set<number>();
+    children.forEach(cid => {
+      if (childPlaced.has(cid)) return;
+      childPlaced.add(cid);
+      const csp = getSpouse(cid);
+      if (csp !== null && children.includes(csp)) childPlaced.add(csp);
+      else if (csp !== null) {
+        // spouse not in children list — treat as single
+      }
+      const w = subtreeWidth(cid, csp !== null && children.includes(csp) ? csp : null);
+      childTotal += w + (childTotal > 0 ? HG : 0);
+    });
+
+    const total = Math.max(selfW, childTotal);
+    subtreeWidthCache.set(key, total);
+    return total;
   }
 
-  // Resolve overlaps left→right per generation
-  genKeys.forEach((g) => {
-    const row = (genMap[g] || [])
-      .filter(id => pos[id])
-      .sort((a, b) => pos[a].x - pos[b].x);
+  // Top-down x assignment
+  const pos: Record<number, { x: number; y: number }> = {};
 
-    for (let i = 1; i < row.length; i++) {
-      const prev = pos[row[i - 1]];
-      const cur = pos[row[i]];
-      const minX = prev.x + W + SIBLING_GAP;
-      if (cur.x < minX) {
-        const shift = minX - cur.x;
-        // Shift this and all to the right in this generation
-        for (let j = i; j < row.length; j++) {
-          pos[row[j]].x += shift;
-        }
-        // Also shift children
-        const m = members.find(x => x.id === row[i]);
-        const shiftSubtree = (mid: number, dx: number, vis = new Set<number>()) => {
-          if (vis.has(mid) || !pos[mid]) return;
-          vis.add(mid);
-          // Only shift if in a deeper generation
-          const mg = genOf(mid);
-          const rg = genOf(row[i]);
-          if (mg > rg) {
-            pos[mid].x += dx;
-            const mc = members.find(x => x.id === mid);
-            (mc?.children || []).forEach(cid => shiftSubtree(cid, dx, vis));
-            (mc?.spouses || []).forEach(sid => {
-              if (genOf(sid) === mg) pos[sid] && (pos[sid].x += dx);
-            });
-          }
-        };
-        if (m) {
-          m.children.forEach(cid => shiftSubtree(cid, shift));
-        }
-      }
+  function assignX(primary: number, spouse: number | null, leftEdge: number, gen: number) {
+    const totalW = subtreeWidth(primary, spouse);
+    const selfW = spouse !== null ? CW + SG + CW : CW;
+    const selfLeft = leftEdge + (totalW - selfW) / 2;
+
+    pos[primary] = { x: selfLeft, y: 24 + gen * (CH + VG) };
+    if (spouse !== null) {
+      pos[spouse] = { x: selfLeft + CW + SG, y: 24 + gen * (CH + VG) };
     }
+
+    // Assign children
+    const children = getCoupleChildren(primary, spouse);
+    const childPlaced = new Set<number>();
+    let childCursor = leftEdge;
+
+    children.forEach(cid => {
+      if (childPlaced.has(cid)) return;
+      childPlaced.add(cid);
+
+      const csp = getSpouse(cid);
+      const useSpouse = csp !== null && children.includes(csp) ? csp : null;
+      if (useSpouse !== null) childPlaced.add(useSpouse);
+
+      const cw = subtreeWidth(cid, useSpouse);
+      assignX(cid, useSpouse, childCursor, gen + 1);
+      childCursor += cw + HG;
+    });
+  }
+
+  // Assign root units (gen 0 couples)
+  let cursor = 24;
+  units.filter(u => u.gen === 0).forEach(u => {
+    const w = subtreeWidth(u.primary, u.spouse);
+    assignX(u.primary, u.spouse, cursor, 0);
+    cursor += w + HG * 2;
   });
 
-  // Normalize to start at x=24
-  const allX = Object.values(pos).map(p => p.x).filter(x => !isNaN(x));
-  const allY = Object.values(pos).map(p => p.y).filter(y => !isNaN(y));
+  // Any unplaced members (orphans in deeper gens with no placed parents)
+  genKeys.forEach((g) => {
+    (genMap[g] || []).forEach(id => {
+      if (pos[id]) return;
+      pos[id] = { x: cursor, y: 24 + g * (CH + VG) };
+      cursor += CW + HG;
+    });
+  });
+
+  return { pos, genMap, genKeys, genOf, getSpouse, getCoupleChildren };
+}
+
+// ─── COMPONENT ──────────────────────────────────────────────────────────────
+
+export default function FamilyTree({ members, selectedId, isAdmin, onSelect, onAddRelative }: Props) {
+  const [zoom, setZoom] = useState(1);
+  const [hovered, setHovered] = useState<number | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const { pos, genMap, genKeys, genOf, getSpouse, getCoupleChildren } = computeLayout(members);
+
+  const allX = Object.values(pos).map(p => p.x).filter(v => !isNaN(v));
+  const allY = Object.values(pos).map(p => p.y).filter(v => !isNaN(v));
   if (!allX.length) return <div style={{ padding: '2rem', color: '#9CA3AF', textAlign: 'center' }}>Chargement…</div>;
 
-  const minX = Math.min(...allX);
-  if (minX < 24) {
-    const offset = 24 - minX;
-    Object.keys(pos).forEach(k => { if (pos[Number(k)]) pos[Number(k)].x += offset; });
-  }
+  const svgW = Math.max(...allX) + CW + 40;
+  const svgH = Math.max(...allY) + CH + 60;
 
-  const svgW = Math.max(...Object.values(pos).map(p => p.x)) + W + 40;
-  const svgH = Math.max(...Object.values(pos).map(p => p.y)) + H + 40;
-
-  // ── DRAW LINES ──────────────────────────────────────────────────────
+  // ── Build SVG lines ──────────────────────────────────────────────────
   const lines: string[] = [];
+  const drawnLines = new Set<string>();
   const drawnCouples = new Set<string>();
 
   genKeys.forEach(g => {
     const row = genMap[g] || [];
-    const processed = new Set<number>();
+    const rowPlaced = new Set<number>();
 
     row.forEach(id => {
-      if (processed.has(id) || !pos[id]) return;
-      processed.add(id);
+      if (rowPlaced.has(id) || !pos[id]) return;
+      rowPlaced.add(id);
 
-      const m = members.find(x => x.id === id);
-      if (!m) return;
+      const sp = getSpouse(id);
+      const useSpouse = sp !== null && pos[sp] && genOf(sp) === g ? sp : null;
+      if (useSpouse !== null) rowPlaced.add(useSpouse);
 
-      const spouseId = (m.spouses || []).find(sid => {
-        const sg = genOf(sid);
-        return sg === g && pos[sid];
-      }) ?? null;
-      if (spouseId !== null) processed.add(spouseId);
-
-      // ── Spouse connector ──
-      if (spouseId !== null && pos[spouseId]) {
-        const coupleKey = [id, spouseId].sort().join('-');
-        if (!drawnCouples.has(coupleKey)) {
-          drawnCouples.add(coupleKey);
-          const x1 = pos[id].x + W;
-          const x2 = pos[spouseId].x;
-          const y = pos[id].y + H / 2 - 8;
+      // ── Spouse line ──
+      if (useSpouse !== null) {
+        const ck = [id, useSpouse].sort().join('|');
+        if (!drawnCouples.has(ck)) {
+          drawnCouples.add(ck);
+          const x1 = pos[id].x + CW;
+          const x2 = pos[useSpouse].x;
+          const cy = pos[id].y + CH / 2 - 10;
           const mx = (x1 + x2) / 2;
-          // Dashed line
-          lines.push(`<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="#D4A843" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.8"/>`);
-          // Heart
-          lines.push(`<text x="${mx}" y="${y + 5}" text-anchor="middle" font-size="11" fill="#D4A843">♥</text>`);
+          lines.push(`<line x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}" stroke="#D4A843" stroke-width="1.5" stroke-dasharray="5,3" opacity="0.85"/>`);
+          lines.push(`<text x="${mx}" y="${cy+5}" text-anchor="middle" font-size="12" fill="#D4A843">♥</text>`);
         }
       }
 
-      // ── Children connector ──
-      const childIds = [...new Set([
-        ...(m.children || []),
-        ...(spouseId !== null ? (members.find(x => x.id === spouseId)?.children || []) : [])
-      ])].filter(cid => {
-        const c = members.find(x => x.id === cid);
-        return c && pos[cid] && pos[cid].y > pos[id].y; // must be strictly below
-      });
+      // ── Parent → Children lines ──
+      const children = getCoupleChildren(id, useSpouse).filter(cid => pos[cid] && pos[cid].y > pos[id].y);
+      if (!children.length) return;
 
-      if (!childIds.length) return;
+      const lk = [id, useSpouse, ...children.sort()].join('|');
+      if (drawnLines.has(lk)) return;
+      drawnLines.add(lk);
 
-      // Parent anchor = center of couple (or center of single parent)
+      // Center of couple
       const leftX = pos[id].x;
-      const rightX = spouseId !== null && pos[spouseId] ? pos[spouseId].x + W : pos[id].x + W;
-      const parentCenterX = (leftX + rightX) / 2;
-      const parentBottomY = pos[id].y + H;
-      const forkY = parentBottomY + V_GAP * 0.42;
+      const rightX = useSpouse !== null ? pos[useSpouse].x + CW : pos[id].x + CW;
+      const stemX = (leftX + rightX) / 2;
+      const stemTop = pos[id].y + CH;
+      const forkY = stemTop + VG * 0.44;
 
-      // Vertical stem down from parent center
-      lines.push(`<line x1="${parentCenterX}" y1="${parentBottomY}" x2="${parentCenterX}" y2="${forkY}" stroke="#B8CEAD" stroke-width="2" stroke-linecap="round"/>`);
+      // Vertical stem down
+      lines.push(`<line x1="${stemX}" y1="${stemTop}" x2="${stemX}" y2="${forkY}" stroke="#B8CEAD" stroke-width="2" stroke-linecap="round"/>`);
 
-      if (childIds.length === 1) {
-        const cp = pos[childIds[0]];
-        const cx = cp.x + W / 2;
-        lines.push(`<line x1="${parentCenterX}" y1="${forkY}" x2="${cx}" y2="${forkY}" stroke="#B8CEAD" stroke-width="2" stroke-linecap="round"/>`);
-        lines.push(`<line x1="${cx}" y1="${forkY}" x2="${cx}" y2="${cp.y}" stroke="#B8CEAD" stroke-width="2" stroke-linecap="round"/>`);
-      } else {
-        // Horizontal bus
-        const childXs = childIds.map(cid => pos[cid].x + W / 2);
-        const busL = Math.min(...childXs);
-        const busR = Math.max(...childXs);
-        lines.push(`<line x1="${busL}" y1="${forkY}" x2="${busR}" y2="${forkY}" stroke="#B8CEAD" stroke-width="2" stroke-linecap="round"/>`);
-        childIds.forEach(cid => {
-          const cp = pos[cid];
-          const cx = cp.x + W / 2;
-          lines.push(`<line x1="${cx}" y1="${forkY}" x2="${cx}" y2="${cp.y}" stroke="#B8CEAD" stroke-width="2" stroke-linecap="round"/>`);
-        });
-        // Connect stem to bus
-        if (parentCenterX < busL || parentCenterX > busR) {
-          lines.push(`<line x1="${parentCenterX}" y1="${forkY}" x2="${Math.min(Math.max(parentCenterX, busL), busR)}" y2="${forkY}" stroke="#B8CEAD" stroke-width="2" stroke-linecap="round"/>`);
+      if (children.length === 1) {
+        const cx = pos[children[0]].x + CW / 2;
+        const cy2 = pos[children[0]].y;
+        if (cx !== stemX) {
+          lines.push(`<line x1="${stemX}" y1="${forkY}" x2="${cx}" y2="${forkY}" stroke="#B8CEAD" stroke-width="2" stroke-linecap="round"/>`);
         }
+        lines.push(`<line x1="${cx}" y1="${forkY}" x2="${cx}" y2="${cy2}" stroke="#B8CEAD" stroke-width="2" stroke-linecap="round"/>`);
+      } else {
+        const xs = children.map(cid => pos[cid].x + CW / 2);
+        const busL = Math.min(...xs);
+        const busR = Math.max(...xs);
+        // Extend stem to bus if needed
+        const clampedStem = Math.min(Math.max(stemX, busL), busR);
+        if (clampedStem !== stemX) {
+          lines.push(`<line x1="${stemX}" y1="${forkY}" x2="${clampedStem}" y2="${forkY}" stroke="#B8CEAD" stroke-width="2" stroke-linecap="round"/>`);
+        }
+        lines.push(`<line x1="${busL}" y1="${forkY}" x2="${busR}" y2="${forkY}" stroke="#B8CEAD" stroke-width="2" stroke-linecap="round"/>`);
+        children.forEach(cid => {
+          const cx = pos[cid].x + CW / 2;
+          lines.push(`<line x1="${cx}" y1="${forkY}" x2="${cx}" y2="${pos[cid].y}" stroke="#B8CEAD" stroke-width="2" stroke-linecap="round"/>`);
+        });
       }
     });
   });
 
-  // ── GEN LABELS ──────────────────────────────────────────────────────
+  // ── Gen labels ───────────────────────────────────────────────────────
   const GEN_NAMES = ['Fondateurs', 'Enfants', 'Petits-enfants', 'Arrière-petits-enfants'];
-  const genLabelsSvg = genKeys.map((g, gi) => {
-    const row = (genMap[g] || []).filter(id => pos[id]);
-    if (!row.length) return '';
-    const y = 24 + gi * (H + V_GAP);
-    return `<text x="4" y="${y + 13}" font-size="8" fill="#AABBA0" font-family="DM Sans,sans-serif" font-weight="600" letter-spacing="0.8">GÉN. ${g + 1}${GEN_NAMES[g] ? ' · ' + GEN_NAMES[g].toUpperCase() : ''}</text>
-    <line x1="0" y1="${y - 6}" x2="${svgW}" y2="${y - 6}" stroke="#E8EDE4" stroke-width="0.75" stroke-dasharray="3,10"/>`;
+  const genLabels = genKeys.map((g, gi) => {
+    const y = 24 + gi * (CH + VG);
+    return `
+      <line x1="0" y1="${y - 8}" x2="${svgW}" y2="${y - 8}" stroke="#E5EDE0" stroke-width="0.75" stroke-dasharray="3,12"/>
+      <text x="6" y="${y + 12}" font-size="8" fill="#AABBA0" font-family="DM Sans,sans-serif" font-weight="600" letter-spacing="0.8">GÉN. ${g + 1}${GEN_NAMES[g] ? ' · ' + GEN_NAMES[g].toUpperCase() : ''}</text>
+    `;
   }).join('');
 
-  return (
-    <div style={{
-      overflowX: 'auto', overflowY: 'auto',
-      maxHeight: 'calc(100vh - 260px)',
-      background: '#FAFAF7',
-      borderRadius: 12,
-      border: '1px solid #E8EDE4',
-      padding: '4px',
-    }}>
-      <div style={{ position: 'relative', width: svgW, height: svgH }}>
-        {/* Lines layer */}
-        <svg width={svgW} height={svgH}
-          style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }}
-          dangerouslySetInnerHTML={{ __html: genLabelsSvg + lines.join('') }}
-        />
-        {/* Cards */}
-        {members.map(m => {
+  // ── Export PDF ───────────────────────────────────────────────────────
+  const exportPDF = () => {
+    const w = window.open('', '_blank');
+    if (!w) return;
+    // Serialize cards as SVG foreignObjects is unreliable for PDF
+    // Instead we generate a clean SVG with text labels for each member
+    const svgContent = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}" style="background:#FAFAF7">
+        <rect width="${svgW}" height="${svgH}" fill="#FAFAF7"/>
+        ${genLabels}
+        ${lines.join('\n')}
+        ${members.map(m => {
           const p = pos[m.id];
-          if (!p || isNaN(p.x) || isNaN(p.y)) return null;
-          return (
-            <div key={m.id}
-              style={{
-                position: 'absolute', left: p.x, top: p.y,
-                transition: 'transform 0.15s ease',
-                transform: hovered === m.id ? 'translateY(-3px)' : 'none',
-                zIndex: m.id === selectedId ? 10 : 1,
-              }}
-              onMouseEnter={() => setHovered(m.id)}
-              onMouseLeave={() => setHovered(null)}
-            >
-              <MemberCard
-                member={m}
-                selected={m.id === selectedId}
-                isAdmin={isAdmin}
-                onClick={() => onSelect(m.id)}
-                onAddRelative={onAddRelative}
-              />
-            </div>
-          );
-        })}
+          if (!p || isNaN(p.x)) return '';
+          const color = m.dead ? '#9CA3AF' : m.gender === 'M' ? '#1E5FA8' : m.gender === 'F' ? '#B8860B' : '#6B7280';
+          const ini = m.name.split(' ').map((w: string) => w[0] || '').slice(0, 2).join('').toUpperCase();
+          const year = m.birth ? m.birth.split('/').pop() : '';
+          const loc = m.birthPlace || '';
+          const meta = [year, loc].filter(Boolean).join(' · ');
+          // Truncate name
+          const name1 = m.name.length > 20 ? m.name.slice(0, 18) + m.name.slice(18).split(' ')[0] : m.name;
+          const nameParts = name1.split(' ');
+          const line1 = nameParts.slice(0, 2).join(' ');
+          const line2 = nameParts.slice(2).join(' ');
+          return `
+            <g>
+              <rect x="${p.x}" y="${p.y}" width="${CW}" height="${CH}" rx="10" fill="white" stroke="${m.id === selectedId ? '#4A7A1E' : '#E5E7EB'}" stroke-width="${m.id === selectedId ? 2 : 1}"/>
+              ${m.dead ? `<text x="${p.x+8}" y="${p.y+14}" font-size="9" fill="#9CA3AF" font-family="DM Sans,sans-serif">✝</text>` : ''}
+              <circle cx="${p.x+CW/2}" cy="${p.y+42}" r="20" fill="${color}"/>
+              <text x="${p.x+CW/2}" y="${p.y+48}" text-anchor="middle" font-size="12" fill="white" font-family="DM Sans,sans-serif" font-weight="500">${ini}</text>
+              <text x="${p.x+CW/2}" y="${p.y+76}" text-anchor="middle" font-size="10.5" fill="#1A1A1A" font-family="DM Sans,sans-serif" font-weight="500">${line1}</text>
+              ${line2 ? `<text x="${p.x+CW/2}" y="${p.y+90}" text-anchor="middle" font-size="10.5" fill="#1A1A1A" font-family="DM Sans,sans-serif" font-weight="500">${line2}</text>` : ''}
+              <text x="${p.x+CW/2}" y="${p.y+108}" text-anchor="middle" font-size="9" fill="#9CA3AF" font-family="DM Sans,sans-serif">${meta}</text>
+            </g>
+          `;
+        }).join('')}
+        <text x="${svgW/2}" y="${svgH - 12}" text-anchor="middle" font-size="9" fill="#C8D0C0" font-family="DM Sans,sans-serif" letter-spacing="1.5">SAYELE GROUP · FAMILLE GHUSSEIN · ARBRE GÉNÉALOGIQUE</text>
+      </svg>`;
+
+    w.document.write(`<!DOCTYPE html><html><head><title>Arbre GHUSSEIN</title>
+      <style>body{margin:0;background:#FAFAF7}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style>
+      </head><body>
+      <div style="padding:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <div style="font-family:serif;font-size:20px;font-weight:600">Arbre Généalogique · Famille GHUSSEIN</div>
+          <button onclick="window.print()" style="padding:8px 18px;background:#4A7A1E;color:white;border:none;border-radius:7px;cursor:pointer;font-size:13px">🖨 Imprimer / PDF</button>
+        </div>
+        ${svgContent}
+      </div>
+      </body></html>`);
+    w.document.close();
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {/* Toolbar */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        {/* Zoom controls */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#fff', border: '1px solid #E5E7EB', borderRadius: 8, padding: '4px 10px' }}>
+          <button onClick={() => setZoom(z => Math.max(0.3, +(z - 0.1).toFixed(1)))}
+            style={{ width: 24, height: 24, border: 'none', background: 'none', fontSize: 16, cursor: 'pointer', color: '#374151', lineHeight: 1 }}>−</button>
+          <span style={{ fontSize: 12, color: '#6B7280', minWidth: 36, textAlign: 'center' }}>{Math.round(zoom * 100)}%</span>
+          <button onClick={() => setZoom(z => Math.min(2, +(z + 0.1).toFixed(1)))}
+            style={{ width: 24, height: 24, border: 'none', background: 'none', fontSize: 16, cursor: 'pointer', color: '#374151', lineHeight: 1 }}>+</button>
+          <button onClick={() => setZoom(1)}
+            style={{ fontSize: 10, border: '1px solid #E5E7EB', background: 'none', borderRadius: 4, padding: '2px 6px', cursor: 'pointer', color: '#6B7280' }}>Réinitialiser</button>
+        </div>
+        <button onClick={() => setZoom(0.5)}
+          style={{ fontSize: 11, padding: '5px 12px', border: '1px solid #E5E7EB', background: '#fff', borderRadius: 7, cursor: 'pointer', color: '#374151' }}>
+          Vue globale
+        </button>
+        <button onClick={exportPDF}
+          style={{ fontSize: 11, padding: '5px 12px', border: '1px solid #4A7A1E', background: '#EAF3DE', borderRadius: 7, cursor: 'pointer', color: '#2D5016', fontWeight: 500 }}>
+          📄 Exporter PDF
+        </button>
+      </div>
+
+      {/* Canvas */}
+      <div ref={containerRef} style={{
+        overflow: 'auto',
+        maxHeight: 'calc(100vh - 300px)',
+        background: '#FAFAF7',
+        borderRadius: 12,
+        border: '1px solid #E8EDE4',
+        cursor: 'grab',
+      }}>
+        <div style={{
+          transform: `scale(${zoom})`,
+          transformOrigin: 'top left',
+          width: svgW,
+          height: svgH,
+          position: 'relative',
+          transition: 'transform 0.2s ease',
+        }}>
+          {/* Lines */}
+          <svg width={svgW} height={svgH}
+            style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }}
+            dangerouslySetInnerHTML={{ __html: genLabels + lines.join('') }}
+          />
+          {/* Cards */}
+          {members.map(m => {
+            const p = pos[m.id];
+            if (!p || isNaN(p.x) || isNaN(p.y)) return null;
+            return (
+              <div key={m.id}
+                style={{
+                  position: 'absolute', left: p.x, top: p.y,
+                  transition: 'transform 0.15s ease',
+                  transform: hovered === m.id ? 'translateY(-3px)' : 'none',
+                  zIndex: m.id === selectedId ? 10 : 1,
+                }}
+                onMouseEnter={() => setHovered(m.id)}
+                onMouseLeave={() => setHovered(null)}
+              >
+                <MemberCard
+                  member={m}
+                  selected={m.id === selectedId}
+                  isAdmin={isAdmin}
+                  onClick={() => onSelect(m.id)}
+                  onAddRelative={onAddRelative}
+                />
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
