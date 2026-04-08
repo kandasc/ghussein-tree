@@ -177,7 +177,7 @@ export default function HomePage() {
         {tab === 'profile' && (
           !selectedMember
             ? <div style={{ textAlign: 'center', padding: '3rem', color: '#9CA3AF', fontSize: 13 }}>Cliquez sur un membre dans l&apos;arbre ou la liste.</div>
-            : <ProfilePanel member={selectedMember} members={members} isAdmin={isAdmin} onSelect={handleSelect} onEdit={m => setModal({ open: true, editMember: m })} onDelete={handleDelete} onAddRelative={handleAddRelative} />
+            : <ProfilePanel member={selectedMember} members={members} isAdmin={isAdmin} onSelect={handleSelect} onEdit={m => setModal({ open: true, editMember: m })} onDelete={handleDelete} onAddRelative={handleAddRelative} onRelationChange={fetchMembers} />
         )}
       </main>
 
