@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import { useSession, signOut } from 'next-auth/react';
-import { Member } from '@/lib/data';
+import { Member, genBadge } from '@/lib/data';
 import FamilyTree from '@/components/FamilyTree';
 import MemberModal from '@/components/MemberModal';
 import ProfilePanel from '@/components/ProfilePanel';
@@ -167,7 +167,7 @@ export default function HomePage() {
                     <div style={{ fontSize: 13, fontWeight: 500, color: '#1A1A1A' }}>{m.name}{m.dead ? ' ✝' : ''}</div>
                     <div style={{ fontSize: 10, color: '#9CA3AF' }}>{[m.birth, m.birthPlace].filter(Boolean).join(' · ') || '—'}</div>
                   </div>
-                  <div style={{ fontSize: 10, color: '#9CA3AF', textAlign: 'right' }}>{m.children.length} enf.<br />G{genOf(m.id, members) + 1}</div>
+                  <div style={{ fontSize: 10, color: '#9CA3AF', textAlign: 'right' }}>{m.children.length} enf.<br />{genBadge(genOf(m.id, members))}</div>
                 </div>
               ))}
             </div>

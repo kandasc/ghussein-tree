@@ -1,3 +1,18 @@
+// Generation names, indexed by depth from the top of the tree.
+// g0 = grandparents, g1 = founding couple, g2 = their children, …
+export const GEN_NAMES = ['Grands-parents', 'Fondateurs', 'Enfants', 'Petits-enfants', 'Arrière-petits-enfants'];
+
+// Full band label used in the tree, e.g. "G1 · FONDATEURS".
+export function genFullLabel(g: number): string {
+  const name = (GEN_NAMES[g] ?? `Génération ${g}`).toUpperCase();
+  return g === 0 ? name : `G${g} · ${name}`;
+}
+
+// Compact badge used in the list, e.g. "G1" (grandparents show "G.-P.").
+export function genBadge(g: number): string {
+  return g === 0 ? 'G.-P.' : `G${g}`;
+}
+
 export interface Member {
   id: number;
   name: string;
@@ -38,8 +53,8 @@ export const initialMembers: Member[] = [
   { id:5,  name:'GHUSSEIN Marie-Hélène', gender:'F', birth:'26/09/1960', birthPlace:'Dabola',   dead:false, parents:[1,2], children:[21,22,23,24,25], spouses:[30],  rank:1 },
   { id:6,  name:'GHUSSEIN Kadija',       gender:'F', birth:'22/07/1962', birthPlace:'Dabola',   dead:false, parents:[1,2], children:[31],             spouses:[],    rank:2 },
   { id:7,  name:'GHUSSEIN Mohamed',      gender:'M', birth:'04/04/1964', birthPlace:'Le Caire', dead:true,  deathInfo:'25/11/2013 à Conakry', parents:[1,2], children:[33,34], spouses:[32], rank:3 },
-  { id:8,  name:'GHUSSEIN Zeinab',       gender:'F', birth:'28/07/1965', birthPlace:'Le Caire', dead:false, parents:[1,2], children:[36,37,38],       spouses:[],    rank:4 },
-  { id:9,  name:'GHUSSEIN Fadel',        gender:'M', birth:'03/08/1969', birthPlace:'Fria',     dead:false, parents:[1,2], children:[39],             spouses:[40],  rank:5 },
+  { id:8,  name:'GHUSSEIN Zeinab',       gender:'F', birth:'28/07/1965', birthPlace:'Le Caire', dead:false, parents:[1,2], children:[36,38],          spouses:[],    rank:4 },
+  { id:9,  name:'GHUSSEIN Fadel',        gender:'M', birth:'03/08/1969', birthPlace:'Fria',     dead:false, parents:[1,2], children:[39,37],          spouses:[40],  rank:5 },
   { id:10, name:'GHUSSEIN Madiou',       gender:'M', birth:'13/06/1972', birthPlace:'',         dead:false, parents:[1,2], children:[],               spouses:[],    rank:6 },
   { id:11, name:'GHUSSEIN Moustapha',    gender:'M', birth:'10/11/1974', birthPlace:'',         dead:false, parents:[1,2], children:[41,42,43],       spouses:[],    rank:7 },
 
@@ -47,7 +62,7 @@ export const initialMembers: Member[] = [
   { id:30, name:'BAH Tanou',         gender:'M', birth:'', birthPlace:'', dead:false, parents:[], children:[21,22,23,24,25], spouses:[5] },
   { id:32, name:'KOUYATE Assiatou',  gender:'F', birth:'09/05/1970', birthPlace:'Conakry', dead:false, parents:[], children:[33,34], spouses:[7] },
   { id:38, name:'AGBOKOU Jean Jacques', gender:'M', birth:'', birthPlace:'Toulouse', dead:false, parents:[8], children:[], spouses:[] },
-  { id:40, name:'ROUX Alexandrine',  gender:'F', birth:'04/11/1972', birthPlace:'Toulouse', dead:false, parents:[], children:[39], spouses:[9] },
+  { id:40, name:'ROUX Alexandrine',  gender:'F', birth:'04/11/1972', birthPlace:'Toulouse', dead:false, parents:[], children:[39,37], spouses:[9] },
 
   // ── G3 — Petits-enfants Marie-Hélène × BAH Tanou ─────────────────────────
   { id:22, name:'BAH Safiatou',      gender:'F', birth:'06/10/1982', birthPlace:'Conakry', dead:false, parents:[5,30], children:[], spouses:[], rank:1 },
@@ -65,10 +80,10 @@ export const initialMembers: Member[] = [
 
   // ── G3 — Petits-enfants Zeinab ────────────────────────────────────────────
   { id:36, name:'GARBA GHUSSEIN Zouena Sarah', gender:'F', birth:'', birthPlace:'', dead:false, parents:[8], children:[], spouses:[], rank:1 },
-  { id:37, name:'GHUSSEIN Charlène',           gender:'F', birth:'08/03/1998', birthPlace:'Toulouse', dead:false, parents:[8], children:[], spouses:[], rank:2 },
 
   // ── G3 — Petits-enfants Fadel × ROUX Alexandrine ─────────────────────────
   { id:39, name:'PERMAL GHUSSEIN Luciana', gender:'F', birth:'01/07/1993', birthPlace:'Toulouse', dead:false, parents:[9,40], children:[], spouses:[], rank:1 },
+  { id:37, name:'GHUSSEIN Charlène',       gender:'F', birth:'08/03/1998', birthPlace:'Toulouse', dead:false, parents:[9,40], children:[], spouses:[], rank:2 },
 
   // ── G3 — Petits-enfants Moustapha ────────────────────────────────────────
   { id:41, name:'GHUSSEIN Mathéo Alain Bruno Gassim', gender:'M', birth:'26/02/2000', birthPlace:'Toulouse', dead:false, parents:[11], children:[], spouses:[], rank:1 },

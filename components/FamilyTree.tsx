@@ -1,6 +1,6 @@
 'use client';
 import { useState } from 'react';
-import { Member } from '@/lib/data';
+import { Member, genFullLabel } from '@/lib/data';
 import MemberCard from './MemberCard';
 
 interface Props {
@@ -11,11 +11,31 @@ interface Props {
   onAddRelative: (id: number, type: 'parent' | 'child' | 'spouse') => void;
 }
 
-const CW = 152;
-const CH = 148;
-const SG = 30;
-const HG = 28;
-const VG = 90;
+// ── Layout constants ─────────────────────────────────────────────────────────
+const CW = 152;        // card width
+const CH = 148;        // card height
+const SG = 30;         // gap between spouses in a normal couple
+const WIDE_SG = 220;   // wider gap for a couple with grandparents shown above BOTH partners
+const HG = 28;         // horizontal gap between sibling subtrees
+const VG = 90;         // vertical gap between generations
+const Y0 = 24;
+const rowY = (g: number) => Y0 + g * (CH + VG);
+
+// ── Birth-order helpers ──────────────────────────────────────────────────────
+function birthYear(m?: Member): number {
+  if (!m || !m.birth) return 9999;
+  const parts = m.birth.split('/');
+  const y = parseInt(parts[parts.length - 1], 10);
+  return isNaN(y) ? 9999 : y;
+}
+// Siblings are ordered by explicit rank, then birth year, then id.
+function childOrder(a: Member, b: Member): number {
+  const ra = a.rank ?? 999, rb = b.rank ?? 999;
+  if (ra !== rb) return ra - rb;
+  const ya = birthYear(a), yb = birthYear(b);
+  if (ya !== yb) return ya - yb;
+  return a.id - b.id;
+}
 
 // ── Generation via parents chain ─────────────────────────────────────────────
 function buildGens(members: Member[]): Map<number, number> {
@@ -36,19 +56,14 @@ function buildGens(members: Member[]): Map<number, number> {
   return cache;
 }
 
-// ── Build couple slots ───────────────────────────────────────────────────────
-// A slot = { primary, spouse|null }
-// Rule: for every mutual spouse pair (A.spouses contains B AND B.spouses contains A),
-//       the one with LOWER id is primary, the other is attached.
-//       If only one-way, still attach.
-// Attached members are NEVER standalone slots.
-
+// ── Couple slots ─────────────────────────────────────────────────────────────
+// A slot is one row-unit: a primary member plus an optional attached spouse.
+// For a mutual spouse pair the lower id is primary; the other is attached and
+// never gets its own slot, which guarantees partners always share a row.
 interface Slot { primary: number; spouse: number | null }
 
 function buildSlots(members: Member[], genOf: Map<number, number>): Slot[] {
   const attached = new Set<number>();
-
-  // Find all spouse pairs - keyed by lower id
   const pairs = new Map<number, number>(); // primary -> spouse
   members.forEach(m => {
     (m.spouses || []).forEach(sid => {
@@ -61,140 +76,137 @@ function buildSlots(members: Member[], genOf: Map<number, number>): Slot[] {
       }
     });
   });
-
-  // Build slots: all members not attached, ordered by gen then id
-  const slots: Slot[] = members
+  return members
     .filter(m => !attached.has(m.id))
     .sort((a, b) => {
-      const ga = genOf.get(a.id) ?? 0;
-      const gb = genOf.get(b.id) ?? 0;
+      const ga = genOf.get(a.id) ?? 0, gb = genOf.get(b.id) ?? 0;
       return ga !== gb ? ga - gb : a.id - b.id;
     })
     .map(m => ({ primary: m.id, spouse: pairs.get(m.id) ?? null }));
-
-  return slots;
 }
 
-// ── Subtree width ────────────────────────────────────────────────────────────
-function computeWidths(
-  slots: Slot[],
-  members: Member[],
-  genOf: Map<number, number>
-): Map<number, number> {
-  const cache = new Map<number, number>();
-  const slotMap = new Map<number, Slot>(); // primary id -> slot
-  slots.forEach(s => slotMap.set(s.primary, s));
-
-  // For a slot, get its children slots (children of primary + spouse, as slot primaries)
-  function getChildSlots(s: Slot): Slot[] {
-    const pm = members.find(x => x.id === s.primary);
-    const sm = s.spouse !== null ? members.find(x => x.id === s.spouse) : null;
-    const childIds = [...new Set([
-      ...(pm?.children || []),
-      ...(sm?.children || []),
-    ])].filter(cid => members.find(x => x.id === cid));
-
-    // Each child is either a primary or an attached spouse -> find its slot
-    const childSlots: Slot[] = [];
-    const seen = new Set<number>();
-    childIds.forEach(cid => {
-      if (seen.has(cid)) return;
-      // Is cid a primary?
-      if (slotMap.has(cid)) {
-        seen.add(cid);
-        // also mark spouse
-        const cs = slotMap.get(cid)!;
-        if (cs.spouse !== null) seen.add(cs.spouse);
-        childSlots.push(cs);
-      }
-      // else: cid is an attached spouse -> its slot is already included via primary
-    });
-    return childSlots;
-  }
-
-  function width(s: Slot): number {
-    if (cache.has(s.primary)) return cache.get(s.primary)!;
-    const selfW = s.spouse !== null ? CW + SG + CW : CW;
-    const children = getChildSlots(s);
-    if (!children.length) { cache.set(s.primary, selfW); return selfW; }
-    const childTotal = children.reduce((sum, cs, i) => sum + width(cs) + (i > 0 ? HG : 0), 0);
-    const total = Math.max(selfW, childTotal);
-    cache.set(s.primary, total);
-    return total;
-  }
-
-  slots.forEach(s => width(s));
-  return cache;
+// ── Slot helpers ─────────────────────────────────────────────────────────────
+function childIdsOf(s: Slot, memberMap: Map<number, Member>): number[] {
+  const pm = memberMap.get(s.primary);
+  const sm = s.spouse !== null ? memberMap.get(s.spouse) : null;
+  return [...new Set([...(pm?.children || []), ...(sm?.children || [])])]
+    .filter(id => memberMap.has(id));
 }
 
-// ── Assign positions ─────────────────────────────────────────────────────────
-function assignPositions(
-  slots: Slot[],
-  members: Member[],
-  genOf: Map<number, number>,
-  widths: Map<number, number>
-): Record<number, { x: number; y: number }> {
-  const pos: Record<number, { x: number; y: number }> = {};
+// Child slots of a couple, in birth order. A child that married in is attached
+// to its own slot, so every child id resolves to the slot it leads.
+function childSlotsOf(s: Slot, slotMap: Map<number, Slot>, memberMap: Map<number, Member>): Slot[] {
+  const kids = childIdsOf(s, memberMap)
+    .map(id => memberMap.get(id)!)
+    .sort(childOrder);
+  const out: Slot[] = [];
+  const seen = new Set<number>();
+  kids.forEach(k => {
+    const cs = slotMap.get(k.id);
+    if (!cs || seen.has(cs.primary)) return;
+    seen.add(cs.primary);
+    if (cs.spouse !== null) seen.add(cs.spouse);
+    out.push(cs);
+  });
+  return out;
+}
+
+// A couple gets the wide gap only when BOTH partners have parents in the tree —
+// i.e. two ancestor couples need to sit above them (the founding couple).
+function coupleGap(s: Slot, memberMap: Map<number, Member>): number {
+  if (s.spouse === null) return 0;
+  const pm = memberMap.get(s.primary), sm = memberMap.get(s.spouse);
+  const hasParents = (m?: Member) => !!m?.parents?.some(p => memberMap.has(p));
+  return hasParents(pm) && hasParents(sm) ? WIDE_SG : SG;
+}
+function selfWidth(s: Slot, memberMap: Map<number, Member>): number {
+  return s.spouse !== null ? CW + coupleGap(s, memberMap) + CW : CW;
+}
+
+// ── Full layout ──────────────────────────────────────────────────────────────
+interface Layout {
+  genOf: Map<number, number>;
+  slots: Slot[];
+  slotMap: Map<number, Slot>;
+  pos: Record<number, { x: number; y: number }>;
+}
+
+function computeLayout(members: Member[]): Layout {
+  const memberMap = new Map(members.map(m => [m.id, m]));
+  const genOf = buildGens(members);
+  const slots = buildSlots(members, genOf);
   const slotMap = new Map<number, Slot>();
   slots.forEach(s => slotMap.set(s.primary, s));
 
-  function getChildSlots(s: Slot): Slot[] {
-    const pm = members.find(x => x.id === s.primary);
-    const sm = s.spouse !== null ? members.find(x => x.id === s.spouse) : null;
-    const childIds = [...new Set([
-      ...(pm?.children || []),
-      ...(sm?.children || []),
-    ])].filter(cid => members.find(x => x.id === cid));
-    const childSlots: Slot[] = [];
-    const seen = new Set<number>();
-    childIds.forEach(cid => {
-      if (seen.has(cid)) return;
-      if (slotMap.has(cid)) {
-        seen.add(cid);
-        const cs = slotMap.get(cid)!;
-        if (cs.spouse !== null) seen.add(cs.spouse);
-        childSlots.push(cs);
-      }
-    });
-    return childSlots;
-  }
+  // Ancestor slots = top-row couples whose line continues through a partner who
+  // married into another couple (the grandparents above the founders). They are
+  // placed directly above their child instead of flowing through the descent.
+  const ancestorSet = new Set<number>();
+  slots.forEach(s => {
+    const g = genOf.get(s.primary) ?? 0;
+    if (g === 0 && childIdsOf(s, memberMap).length > 0) ancestorSet.add(s.primary);
+  });
+  const descentSlots = slots.filter(s => !ancestorSet.has(s.primary));
 
+  // Subtree widths for the descent forest.
+  const widths = new Map<number, number>();
+  function width(s: Slot): number {
+    if (widths.has(s.primary)) return widths.get(s.primary)!;
+    const selfW = selfWidth(s, memberMap);
+    const children = childSlotsOf(s, slotMap, memberMap);
+    if (!children.length) { widths.set(s.primary, selfW); return selfW; }
+    const childTotal = children.reduce((sum, cs, i) => sum + width(cs) + (i > 0 ? HG : 0), 0);
+    const total = Math.max(selfW, childTotal);
+    widths.set(s.primary, total);
+    return total;
+  }
+  descentSlots.forEach(width);
+
+  const pos: Record<number, { x: number; y: number }> = {};
   function place(s: Slot, leftEdge: number) {
     const g = genOf.get(s.primary) ?? 0;
     const totalW = widths.get(s.primary) ?? CW;
-    const selfW = s.spouse !== null ? CW + SG + CW : CW;
+    const selfW = selfWidth(s, memberMap);
     const selfLeft = leftEdge + (totalW - selfW) / 2;
-
-    pos[s.primary] = { x: selfLeft, y: 24 + g * (CH + VG) };
-    if (s.spouse !== null) {
-      pos[s.spouse] = { x: selfLeft + CW + SG, y: 24 + g * (CH + VG) };
-    }
-
-    let childCursor = leftEdge;
-    getChildSlots(s).forEach(cs => {
-      place(cs, childCursor);
-      childCursor += (widths.get(cs.primary) ?? CW) + HG;
+    pos[s.primary] = { x: selfLeft, y: rowY(g) };
+    if (s.spouse !== null) pos[s.spouse] = { x: selfLeft + CW + coupleGap(s, memberMap), y: rowY(g) };
+    let cur = leftEdge;
+    childSlotsOf(s, slotMap, memberMap).forEach(cs => {
+      place(cs, cur);
+      cur += (widths.get(cs.primary) ?? CW) + HG;
     });
   }
 
-  // Roots = gen 0 slots
-  let cursor = 24;
-  slots.filter(s => (genOf.get(s.primary) ?? 0) === 0).forEach(s => {
-    place(s, cursor);
-    cursor += (widths.get(s.primary) ?? CW) + HG * 2;
+  // Descent roots = descent slots that are nobody's child within the descent
+  // (the founding couple, whose parents are the ancestor slots above).
+  const childPrimaries = new Set<number>();
+  descentSlots.forEach(s => childSlotsOf(s, slotMap, memberMap).forEach(cs => childPrimaries.add(cs.primary)));
+  let cursor = Y0;
+  descentSlots
+    .filter(s => !childPrimaries.has(s.primary))
+    .forEach(s => { place(s, cursor); cursor += (widths.get(s.primary) ?? CW) + HG * 2; });
+
+  // Safety: place any descent slot the recursion somehow missed.
+  descentSlots.forEach(s => {
+    if (pos[s.primary]) return;
+    const g = genOf.get(s.primary) ?? 0;
+    pos[s.primary] = { x: cursor, y: rowY(g) };
+    if (s.spouse !== null) pos[s.spouse] = { x: cursor + CW + coupleGap(s, memberMap), y: rowY(g) };
+    cursor += selfWidth(s, memberMap) + HG;
   });
 
-  // Orphan deeper slots not yet placed
-  slots.forEach(s => {
-    if (!pos[s.primary]) {
-      const g = genOf.get(s.primary) ?? 0;
-      pos[s.primary] = { x: cursor, y: 24 + g * (CH + VG) };
-      if (s.spouse !== null) pos[s.spouse] = { x: cursor + CW + SG, y: 24 + g * (CH + VG) };
-      cursor += (widths.get(s.primary) ?? CW) + HG;
-    }
+  // Ancestor couples: centre each one directly above its (already placed) child.
+  ancestorSet.forEach(primary => {
+    const s = slotMap.get(primary)!;
+    const childId = childIdsOf(s, memberMap).find(id => pos[id]);
+    const childCenter = childId != null ? pos[childId].x + CW / 2 : cursor;
+    const selfW = selfWidth(s, memberMap);
+    const left = childCenter - selfW / 2;
+    pos[s.primary] = { x: left, y: rowY(0) };
+    if (s.spouse !== null) pos[s.spouse] = { x: left + CW + coupleGap(s, memberMap), y: rowY(0) };
   });
 
-  return pos;
+  return { genOf, slots, slotMap, pos };
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -202,13 +214,7 @@ export default function FamilyTree({ members, selectedId, isAdmin, onSelect, onA
   const [zoom, setZoom] = useState(1);
   const [hovered, setHovered] = useState<number | null>(null);
 
-  const genOf = buildGens(members);
-  const slots = buildSlots(members, genOf);
-  const widths = computeWidths(slots, members, genOf);
-  const pos = assignPositions(slots, members, genOf, widths);
-
-  const slotMap = new Map<number, Slot>();
-  slots.forEach(s => slotMap.set(s.primary, s));
+  const { genOf, slots, pos } = computeLayout(members);
 
   const allX = Object.values(pos).map(p => p.x).filter(v => !isNaN(v));
   const allY = Object.values(pos).map(p => p.y).filter(v => !isNaN(v));
@@ -275,12 +281,12 @@ export default function FamilyTree({ members, selectedId, isAdmin, onSelect, onA
   });
 
   // ── Gen labels ────────────────────────────────────────────────────────────
-  const maxGen = Math.max(...members.map(m => genOf.get(m.id) ?? 0));
-  const GEN_NAMES = ['Fondateurs', 'Enfants', 'Petits-enfants', 'Arrière-petits-enfants'];
+  const maxGen = Math.max(0, ...members.map(m => genOf.get(m.id) ?? 0));
   const genLabels = Array.from({ length: maxGen + 1 }, (_, g) => {
-    const y = 24 + g * (CH + VG);
+    const y = rowY(g);
+    const label = genFullLabel(g);
     return `<line x1="0" y1="${y-8}" x2="${svgW}" y2="${y-8}" stroke="#E5EDE0" stroke-width="0.75" stroke-dasharray="3,12"/>
-    <text x="6" y="${y+12}" font-size="8" fill="#AABBA0" font-family="DM Sans,sans-serif" font-weight="600" letter-spacing="0.8">GÉN. ${g+1}${GEN_NAMES[g] ? ' · '+GEN_NAMES[g].toUpperCase() : ''}</text>`;
+    <text x="6" y="${y+12}" font-size="8" fill="#AABBA0" font-family="DM Sans,sans-serif" font-weight="600" letter-spacing="0.8">${label}</text>`;
   }).join('');
 
   // ── Export PDF ────────────────────────────────────────────────────────────
