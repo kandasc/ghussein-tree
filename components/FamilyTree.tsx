@@ -148,6 +148,36 @@ function computeLayout(members: Member[]): Layout {
   });
   const descentSlots = slots.filter(s => !ancestorSet.has(s.primary));
 
+  // Founder siblings = single G1 slots that share a founder's parents. The
+  // founding couple is the descent root whose two partners each descend from an
+  // ancestor couple (both have parents in the tree). We pull the founders'
+  // brothers and sisters out of the normal root flow and flank the couple with
+  // them: the father's line to his left, the mother's line to her right — so
+  // each family branch sits on its own side instead of piling up together.
+  const founderSlot = descentSlots.find(s => {
+    if (s.spouse === null) return false;
+    const pm = memberMap.get(s.primary), sm = memberMap.get(s.spouse);
+    const hp = (m?: Member) => !!m?.parents?.some(p => memberMap.has(p));
+    return hp(pm) && hp(sm);
+  });
+  const leftSibs: number[] = [], rightSibs: number[] = [];
+  if (founderSlot) {
+    const father = memberMap.get(founderSlot.primary)!;
+    const mother = memberMap.get(founderSlot.spouse!)!;
+    const patParents = new Set((father.parents || []).filter(p => memberMap.has(p)));
+    const matParents = new Set((mother.parents || []).filter(p => memberMap.has(p)));
+    descentSlots.forEach(s => {
+      if (s.primary === founderSlot.primary) return;
+      if ((genOf.get(s.primary) ?? 0) !== 1) return;
+      const par = memberMap.get(s.primary)?.parents || [];
+      if (par.some(p => patParents.has(p))) leftSibs.push(s.primary);
+      else if (par.some(p => matParents.has(p))) rightSibs.push(s.primary);
+    });
+    const ord = (a: number, b: number) => childOrder(memberMap.get(a)!, memberMap.get(b)!);
+    leftSibs.sort(ord); rightSibs.sort(ord);
+  }
+  const flankSet = new Set([...leftSibs, ...rightSibs]);
+
   // Subtree widths for the descent forest.
   const widths = new Map<number, number>();
   function width(s: Slot): number {
@@ -183,8 +213,26 @@ function computeLayout(members: Member[]): Layout {
   descentSlots.forEach(s => childSlotsOf(s, slotMap, memberMap).forEach(cs => childPrimaries.add(cs.primary)));
   let cursor = Y0;
   descentSlots
-    .filter(s => !childPrimaries.has(s.primary))
+    .filter(s => !childPrimaries.has(s.primary) && !flankSet.has(s.primary))
     .forEach(s => { place(s, cursor); cursor += (widths.get(s.primary) ?? CW) + HG * 2; });
+
+  // Flank the founding couple with the founders' siblings on their family side:
+  // the father's siblings run leftward from his card, the mother's run rightward
+  // from hers, each nearest sibling hugging the founder.
+  if (founderSlot && pos[founderSlot.primary] && pos[founderSlot.spouse!]) {
+    let cur = pos[founderSlot.primary].x;
+    [...leftSibs].reverse().forEach(id => {
+      const x = cur - HG - CW;
+      pos[id] = { x, y: rowY(1) };
+      cur = x;
+    });
+    cur = pos[founderSlot.spouse!].x + CW;
+    rightSibs.forEach(id => {
+      const x = cur + HG;
+      pos[id] = { x, y: rowY(1) };
+      cur = x + CW;
+    });
+  }
 
   // Safety: place any descent slot the recursion somehow missed.
   descentSlots.forEach(s => {
@@ -195,16 +243,25 @@ function computeLayout(members: Member[]): Layout {
     cursor += selfWidth(s, memberMap) + HG;
   });
 
-  // Ancestor couples: centre each one directly above its (already placed) child.
+  // Ancestor couples: centre each one over the span of ALL its placed children
+  // (the founder plus that founder's siblings now flanking the couple below).
   ancestorSet.forEach(primary => {
     const s = slotMap.get(primary)!;
-    const childId = childIdsOf(s, memberMap).find(id => pos[id]);
-    const childCenter = childId != null ? pos[childId].x + CW / 2 : cursor;
+    const centers = childIdsOf(s, memberMap).filter(id => pos[id]).map(id => pos[id].x + CW / 2);
+    const childCenter = centers.length ? (Math.min(...centers) + Math.max(...centers)) / 2 : cursor;
     const selfW = selfWidth(s, memberMap);
     const left = childCenter - selfW / 2;
     pos[s.primary] = { x: left, y: rowY(0) };
     if (s.spouse !== null) pos[s.spouse] = { x: left + CW + coupleGap(s, memberMap), y: rowY(0) };
   });
+
+  // Left-flank siblings can push into negative x; shift the whole tree so the
+  // leftmost card keeps the Y0 margin.
+  const allXs = Object.values(pos).map(p => p.x).filter(v => !isNaN(v));
+  if (allXs.length) {
+    const shift = Y0 - Math.min(...allXs);
+    if (shift !== 0) Object.values(pos).forEach(p => { p.x += shift; });
+  }
 
   return { genOf, slots, slotMap, pos };
 }
