@@ -361,9 +361,31 @@ export default function FamilyTree({ members, selectedId, isAdmin, onSelect, onA
   };
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-  const exportPDF = () => {
+  const exportPDF = async () => {
     const w = window.open('', '_blank');
     if (!w) return;
+    w.document.write('<!doctype html><meta charset="utf-8"><title>Arbre GHUSSEIN</title><body style="margin:0;font-family:system-ui,sans-serif;color:#6B7280;padding:28px;font-size:14px">Génération du PDF…</body>');
+
+    // Preload member photos as embedded data URLs so they render in the print
+    // document without CORS/timing issues. Fall back to the raw URL, then to
+    // initials, if a photo can't be fetched.
+    const photoMap = new Map<number, string>();
+    await Promise.all(members.filter(m => m.photoUrl).map(async m => {
+      try {
+        const res = await fetch(m.photoUrl!, { mode: 'cors' });
+        const blob = await res.blob();
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(fr.result as string);
+          fr.onerror = reject;
+          fr.readAsDataURL(blob);
+        });
+        photoMap.set(m.id, dataUrl);
+      } catch {
+        photoMap.set(m.id, m.photoUrl!);
+      }
+    }));
+
     const today = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
     const gens = maxGen + 1;
 
@@ -378,11 +400,17 @@ export default function FamilyTree({ members, selectedId, isAdmin, onSelect, onA
         const [l1, l2] = nameLines(m.name);
         const f1 = l1.length > 15 ? 9 : 10;
         const f2 = l2.length > 20 ? 8 : 9;
+        const cx = p.x + CW / 2, cy = p.y + 40, photo = photoMap.get(m.id);
+        const avatar = photo
+          ? `<clipPath id="pc${m.id}"><circle cx="${cx}" cy="${cy}" r="19"/></clipPath>
+          <image href="${photo}" x="${cx-19}" y="${cy-19}" width="38" height="38" preserveAspectRatio="xMidYMid slice" clip-path="url(#pc${m.id})"/>
+          <circle cx="${cx}" cy="${cy}" r="19" fill="none" stroke="${color}" stroke-width="2"/>`
+          : `<circle cx="${cx}" cy="${cy}" r="19" fill="${color}"/>
+          <text x="${cx}" y="${p.y+46}" text-anchor="middle" font-size="12" fill="white" font-family="sans-serif" font-weight="500">${esc(ini)}</text>`;
         return `<g>
           <rect x="${p.x}" y="${p.y}" width="${CW}" height="${CH}" rx="10" fill="white" stroke="#E5E7EB" stroke-width="1"/>
           ${m.dead?`<text x="${p.x+8}" y="${p.y+14}" font-size="9" fill="#9CA3AF" font-family="sans-serif">✝</text>`:''}
-          <circle cx="${p.x+CW/2}" cy="${p.y+40}" r="19" fill="${color}"/>
-          <text x="${p.x+CW/2}" y="${p.y+46}" text-anchor="middle" font-size="12" fill="white" font-family="sans-serif" font-weight="500">${esc(ini)}</text>
+          ${avatar}
           <text x="${p.x+CW/2}" y="${p.y+72}" text-anchor="middle" font-size="${f1}" fill="#1A1A1A" font-family="sans-serif" font-weight="600">${esc(l1)}</text>
           ${l2?`<text x="${p.x+CW/2}" y="${p.y+87}" text-anchor="middle" font-size="${f2}" fill="#1A1A1A" font-family="sans-serif">${esc(l2)}</text>`:''}
           <text x="${p.x+CW/2}" y="${p.y+107}" text-anchor="middle" font-size="9" fill="#9CA3AF" font-family="sans-serif">${esc(meta)}</text>
