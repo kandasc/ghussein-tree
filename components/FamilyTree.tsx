@@ -347,10 +347,27 @@ export default function FamilyTree({ members, selectedId, isAdmin, onSelect, onA
   }).join('');
 
   // ── Export PDF ────────────────────────────────────────────────────────────
+  // Split a name onto two lines: the leading UPPERCASE tokens are the surname
+  // (line 1), the rest are given names (line 2). Font shrinks for long lines so
+  // nothing spills out of the 152px card.
+  const nameLines = (name: string): [string, string] => {
+    const words = name.trim().split(/\s+/);
+    const isUpper = (w: string) => w === w.toUpperCase() && /[A-ZÀ-Þ]/.test(w);
+    let cut = 0;
+    while (cut < words.length && isUpper(words[cut])) cut++;
+    if (cut === 0) cut = 1;                       // always keep ≥1 word on line 1
+    if (cut === words.length && words.length > 1) cut = words.length - 1;
+    return [words.slice(0, cut).join(' '), words.slice(cut).join(' ')];
+  };
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
   const exportPDF = () => {
     const w = window.open('', '_blank');
     if (!w) return;
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}">
+    const today = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
+    const gens = maxGen + 1;
+
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${svgW} ${svgH}" style="width:100%;height:auto;display:block">
       <rect width="${svgW}" height="${svgH}" fill="#FAFAF7"/>
       ${genLabels}${lines.join('\n')}
       ${members.map(m => {
@@ -358,28 +375,50 @@ export default function FamilyTree({ members, selectedId, isAdmin, onSelect, onA
         const color = m.dead?'#9CA3AF':m.gender==='M'?'#1E5FA8':m.gender==='F'?'#B8860B':'#6B7280';
         const ini = m.name.split(' ').map((x:string)=>x[0]||'').slice(0,2).join('').toUpperCase();
         const meta = [m.birth?m.birth.split('/').pop():'', m.birthPlace].filter(Boolean).join(' · ');
-        const words = m.name.split(' ');
-        const l1 = words.slice(0,2).join(' '), l2 = words.slice(2).join(' ');
+        const [l1, l2] = nameLines(m.name);
+        const f1 = l1.length > 15 ? 9 : 10;
+        const f2 = l2.length > 20 ? 8 : 9;
         return `<g>
           <rect x="${p.x}" y="${p.y}" width="${CW}" height="${CH}" rx="10" fill="white" stroke="#E5E7EB" stroke-width="1"/>
           ${m.dead?`<text x="${p.x+8}" y="${p.y+14}" font-size="9" fill="#9CA3AF" font-family="sans-serif">✝</text>`:''}
           <circle cx="${p.x+CW/2}" cy="${p.y+40}" r="19" fill="${color}"/>
-          <text x="${p.x+CW/2}" y="${p.y+46}" text-anchor="middle" font-size="12" fill="white" font-family="sans-serif" font-weight="500">${ini}</text>
-          <text x="${p.x+CW/2}" y="${p.y+72}" text-anchor="middle" font-size="10" fill="#1A1A1A" font-family="sans-serif" font-weight="500">${l1}</text>
-          ${l2?`<text x="${p.x+CW/2}" y="${p.y+86}" text-anchor="middle" font-size="10" fill="#1A1A1A" font-family="sans-serif">${l2}</text>`:''}
-          <text x="${p.x+CW/2}" y="${p.y+106}" text-anchor="middle" font-size="9" fill="#9CA3AF" font-family="sans-serif">${meta}</text>
+          <text x="${p.x+CW/2}" y="${p.y+46}" text-anchor="middle" font-size="12" fill="white" font-family="sans-serif" font-weight="500">${esc(ini)}</text>
+          <text x="${p.x+CW/2}" y="${p.y+72}" text-anchor="middle" font-size="${f1}" fill="#1A1A1A" font-family="sans-serif" font-weight="600">${esc(l1)}</text>
+          ${l2?`<text x="${p.x+CW/2}" y="${p.y+87}" text-anchor="middle" font-size="${f2}" fill="#1A1A1A" font-family="sans-serif">${esc(l2)}</text>`:''}
+          <text x="${p.x+CW/2}" y="${p.y+107}" text-anchor="middle" font-size="9" fill="#9CA3AF" font-family="sans-serif">${esc(meta)}</text>
         </g>`;
       }).join('')}
       <text x="${svgW/2}" y="${svgH-12}" text-anchor="middle" font-size="8" fill="#C8D0C0" font-family="sans-serif" letter-spacing="1.5">SAYELE GROUP · FAMILLE GHUSSEIN</text>
     </svg>`;
-    w.document.write(`<!DOCTYPE html><html><head><title>Arbre GHUSSEIN</title>
-    <style>body{margin:0;padding:16px;background:#FAFAF7;font-family:sans-serif}
-    .hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
-    .btn{padding:8px 18px;background:#4A7A1E;color:white;border:none;border-radius:7px;cursor:pointer;font-size:13px}
-    @media print{.btn{display:none}}</style></head><body>
-    <div class="hdr"><h1 style="font-size:18px;margin:0">Arbre Généalogique · Famille GHUSSEIN</h1>
-    <button class="btn" onclick="window.print()">🖨 Imprimer / PDF</button></div>
-    ${svg}</body></html>`);
+
+    const legend = [['#1E5FA8','Homme'],['#B8860B','Femme'],['#9CA3AF','Décédé(e)']]
+      .map(([c,l]) => `<span class="lg"><i style="background:${c}"></i>${l}</span>`).join('');
+
+    w.document.write(`<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>Arbre GHUSSEIN — ${today}</title>
+    <style>
+      @page { size: A4 landscape; margin: 8mm; }
+      * { box-sizing: border-box; }
+      body { margin:0; padding:16px; background:#fff; font-family:'DM Sans',system-ui,sans-serif; color:#1A1A1A; }
+      .hdr { display:flex; justify-content:space-between; align-items:flex-end; gap:16px; margin-bottom:12px; padding-bottom:10px; border-bottom:2px solid #4A7A1E; }
+      .hdr h1 { font-size:19px; margin:0; }
+      .hdr .sub { font-size:11px; color:#6B7280; margin-top:3px; }
+      .meta { text-align:right; font-size:11px; color:#6B7280; }
+      .legend { display:flex; gap:14px; margin:8px 0 12px; font-size:11px; color:#374151; }
+      .lg { display:flex; align-items:center; gap:5px; }
+      .lg i { width:9px; height:9px; border-radius:50%; display:inline-block; }
+      .tree { width:100%; }
+      .btn { padding:8px 18px; background:#4A7A1E; color:#fff; border:none; border-radius:7px; cursor:pointer; font-size:13px; font-weight:500; }
+      @media print { .toolbar { display:none; } body { padding:0; } }
+    </style></head><body>
+    <div class="toolbar" style="margin-bottom:12px"><button class="btn" onclick="window.print()">🖨 Imprimer / Enregistrer en PDF</button></div>
+    <div class="hdr">
+      <div><h1>Arbre Généalogique · Famille GHUSSEIN</h1><div class="sub">Édité le ${today}</div></div>
+      <div class="meta">${members.length} membres<br>${gens} générations</div>
+    </div>
+    <div class="legend">${legend}</div>
+    <div class="tree">${svg}</div>
+    <script>window.addEventListener('load',function(){setTimeout(function(){window.print();},300);});<\/script>
+    </body></html>`);
     w.document.close();
   };
 
